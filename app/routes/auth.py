@@ -1,10 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from sqlalchemy import or_
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.login_crypto import (
+    LoginCryptoError,
+    decrypt_login_payload,
+    get_login_public_key_pem,
+)
 from app.models.crm import Advisor
 from app.security import (
     create_access_token,
@@ -17,14 +22,20 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class SecureLoginRequest(BaseModel):
+    encrypted_key: str = Field(min_length=1, max_length=4096)
+    iv: str = Field(min_length=1, max_length=256)
+    ciphertext: str = Field(min_length=1, max_length=16384)
 
 
 class CreateInitialAdminRequest(BaseModel):
-    name: str = "Administrador"
-    username: str = "admin"
-    password: str = "123456"
+    name: str = Field(min_length=1, max_length=150)
+    username: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=12, max_length=256)
 
 
 def user_to_dict(user: Advisor):
@@ -39,15 +50,20 @@ def user_to_dict(user: Advisor):
     }
 
 
-def authenticate_user(db: Session, username: str, password: str):
-    identifier = username.strip().lower()
+def authenticate_user(
+    db: Session,
+    username: str,
+    password: str,
+):
+    clean_username = username.strip()
+    identifier = clean_username.lower()
 
     user = (
         db.query(Advisor)
         .filter(
             or_(
-                Advisor.email == identifier,
-                Advisor.name == username.strip(),
+                func.lower(Advisor.email) == identifier,
+                func.lower(Advisor.name) == identifier,
             )
         )
         .first()
@@ -83,12 +99,97 @@ def build_login_response(user: Advisor):
     }
 
 
+def perform_login(
+    db: Session,
+    username: str,
+    password: str,
+):
+    user = authenticate_user(
+        db=db,
+        username=username,
+        password=password,
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return build_login_response(user)
+
+
+@router.get("/login-public-key")
+def login_public_key():
+    """
+    Entrega exclusivamente la llave pública RSA.
+
+    La llave privada permanece en la variable de entorno
+    LOGIN_PRIVATE_KEY_B64 del backend.
+    """
+    try:
+        public_key = get_login_public_key_pem()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Secure login is not configured",
+        )
+
+    return {
+        "algorithm": "RSA-OAEP",
+        "hash": "SHA-256",
+        "public_key": public_key,
+    }
+
+
+@router.post("/login-secure")
+def login_secure(
+    data: SecureLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Recibe el login cifrado mediante:
+
+    - RSA-OAEP SHA-256 para la clave AES.
+    - AES-GCM para el contenido del login.
+    """
+    try:
+        credentials = decrypt_login_payload(
+            encrypted_key_b64=data.encrypted_key,
+            iv_b64=data.iv,
+            ciphertext_b64=data.ciphertext,
+        )
+    except LoginCryptoError:
+        # No se devuelve información específica del descifrado
+        # para evitar filtrar detalles internos.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid encrypted login payload",
+        )
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Secure login is not configured",
+        )
+
+    return perform_login(
+        db=db,
+        username=credentials["username"],
+        password=credentials["password"],
+    )
+
+
 @router.post("/create-initial-admin")
 def create_initial_admin(
     data: CreateInitialAdminRequest,
     db: Session = Depends(get_db),
 ):
-    existing_admin = db.query(Advisor).filter(Advisor.role == "admin").first()
+    existing_admin = (
+        db.query(Advisor)
+        .filter(Advisor.role == "admin")
+        .first()
+    )
 
     if existing_admin:
         return {
@@ -98,17 +199,22 @@ def create_initial_admin(
         }
 
     username = data.username.strip().lower()
+    name = data.name.strip()
 
-    existing_user = db.query(Advisor).filter(Advisor.email == username).first()
+    existing_user = (
+        db.query(Advisor)
+        .filter(func.lower(Advisor.email) == username)
+        .first()
+    )
 
     if existing_user:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already exists",
         )
 
     admin = Advisor(
-        name=data.name.strip(),
+        name=name,
         email=username,
         password_hash=hash_password(data.password),
         role="admin",
@@ -132,41 +238,37 @@ def login_for_swagger(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    user = authenticate_user(
+    """
+    Login tradicional utilizado por Swagger/OAuth2.
+
+    No será utilizado por el frontend de producción.
+    """
+    return perform_login(
         db=db,
         username=form_data.username,
         password=form_data.password,
     )
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
 
-    return build_login_response(user)
-
-
-@router.post("/login-json")
+@router.post("/login-json", deprecated=True)
 def login_json(
     data: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    user = authenticate_user(
+    """
+    Endpoint anterior conservado temporalmente por compatibilidad.
+
+    El frontend nuevo utilizará /auth/login-secure.
+    """
+    return perform_login(
         db=db,
         username=data.username,
         password=data.password,
     )
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
-
-    return build_login_response(user)
-
 
 @router.get("/me")
-def get_me(current_user: Advisor = Depends(get_current_user)):
+def get_me(
+    current_user: Advisor = Depends(get_current_user),
+):
     return user_to_dict(current_user)
