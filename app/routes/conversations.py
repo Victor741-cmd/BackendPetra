@@ -10,10 +10,7 @@ from app.security import get_current_user
 from app.services.crm_service import save_outbound_message
 from app.whatsapp_service import send_text_message
 
-router = APIRouter(
-    prefix="/conversations",
-    tags=["Conversations"],
-)
+router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
 
 class SendConversationMessageRequest(BaseModel):
@@ -28,10 +25,7 @@ class AssignConversationRequest(BaseModel):
     advisor_id: int
 
 
-def can_access_conversation(
-    user: Advisor,
-    conversation: Conversation,
-) -> bool:
+def can_access_conversation(user: Advisor, conversation: Conversation) -> bool:
     if user.role == "admin":
         return True
 
@@ -42,7 +36,12 @@ def can_access_conversation(
 
 
 def serialize_message(message: Message):
-    has_media = bool(message.media_id)
+    has_media_metadata = bool(message.media_id)
+
+    media_available = bool(
+        message.media_storage_status == "stored"
+        and message.media_blob_name
+    )
 
     return {
         "id": message.id,
@@ -56,10 +55,18 @@ def serialize_message(message: Message):
             "filename": message.media_filename,
             "caption": message.media_caption,
             "sha256": message.media_sha256,
-            "available": False,
-            "url": None,
+            "size": message.media_size,
+            "storage_status": message.media_storage_status,
+            "storage_error": message.media_storage_error,
+            "stored_at": message.media_stored_at,
+            "available": media_available,
+            "url": (
+                f"/media/messages/{message.id}"
+                if media_available
+                else None
+            ),
         }
-        if has_media
+        if has_media_metadata
         else None,
         "status": message.status,
         "status_updated_at": message.status_updated_at,
@@ -71,10 +78,7 @@ def serialize_message(message: Message):
     }
 
 
-def serialize_conversation(
-    conversation: Conversation,
-    last_message: Message | None,
-):
+def serialize_conversation(conversation: Conversation, last_message: Message | None):
     return {
         "id": conversation.id,
         "status": conversation.status,
@@ -98,11 +102,7 @@ def serialize_conversation(
         }
         if conversation.advisor
         else None,
-        "last_message": (
-            serialize_message(last_message)
-            if last_message
-            else None
-        ),
+        "last_message": serialize_message(last_message) if last_message else None,
     }
 
 
@@ -111,49 +111,29 @@ def list_conversations(
     db: Session = Depends(get_db),
     current_user: Advisor = Depends(get_current_user),
 ):
-    query = (
-        db.query(Conversation)
-        .options(
-            joinedload(Conversation.contact),
-            joinedload(Conversation.advisor),
-        )
+    query = db.query(Conversation).options(
+        joinedload(Conversation.contact),
+        joinedload(Conversation.advisor),
     )
 
     if current_user.role == "advisor":
-        query = query.filter(
-            Conversation.assigned_advisor_id == current_user.id
-        )
-
+        query = query.filter(Conversation.assigned_advisor_id == current_user.id)
     elif current_user.role != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid role",
-        )
+        raise HTTPException(status_code=403, detail="Invalid role")
 
-    conversations = (
-        query
-        .order_by(Conversation.last_message_at.desc())
-        .all()
-    )
+    conversations = query.order_by(Conversation.last_message_at.desc()).all()
 
     result = []
 
     for conversation in conversations:
         last_message = (
             db.query(Message)
-            .filter(
-                Message.conversation_id == conversation.id
-            )
+            .filter(Message.conversation_id == conversation.id)
             .order_by(Message.created_at.desc())
             .first()
         )
 
-        result.append(
-            serialize_conversation(
-                conversation,
-                last_message,
-            )
-        )
+        result.append(serialize_conversation(conversation, last_message))
 
     return result
 
@@ -170,22 +150,14 @@ def get_conversation_messages(
             joinedload(Conversation.contact),
             joinedload(Conversation.advisor),
         )
-        .filter(
-            Conversation.id == conversation_id
-        )
+        .filter(Conversation.id == conversation_id)
         .first()
     )
 
     if not conversation:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
-        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not can_access_conversation(
-        current_user,
-        conversation,
-    ):
+    if not can_access_conversation(current_user, conversation):
         raise HTTPException(
             status_code=403,
             detail="You do not have access to this conversation",
@@ -193,9 +165,7 @@ def get_conversation_messages(
 
     messages = (
         db.query(Message)
-        .filter(
-            Message.conversation_id == conversation_id
-        )
+        .filter(Message.conversation_id == conversation_id)
         .order_by(Message.created_at.asc())
         .all()
     )
@@ -206,16 +176,10 @@ def get_conversation_messages(
             "status": conversation.status,
             "source_campaign": conversation.source_campaign,
             "unread_count": conversation.unread_count or 0,
-            "has_new_message": bool(
-                conversation.has_new_message
-            ),
-            "last_inbound_message_at": (
-                conversation.last_inbound_message_at
-            ),
+            "has_new_message": bool(conversation.has_new_message),
+            "last_inbound_message_at": conversation.last_inbound_message_at,
             "last_read_at": conversation.last_read_at,
-            "assigned_advisor_id": (
-                conversation.assigned_advisor_id
-            ),
+            "assigned_advisor_id": conversation.assigned_advisor_id,
             "contact": {
                 "id": conversation.contact.id,
                 "name": conversation.contact.name,
@@ -230,10 +194,7 @@ def get_conversation_messages(
             if conversation.advisor
             else None,
         },
-        "messages": [
-            serialize_message(message)
-            for message in messages
-        ],
+        "messages": [serialize_message(message) for message in messages],
     }
 
 
@@ -246,49 +207,30 @@ def send_conversation_message(
 ):
     conversation = (
         db.query(Conversation)
-        .options(
-            joinedload(Conversation.contact)
-        )
-        .filter(
-            Conversation.id == conversation_id
-        )
+        .options(joinedload(Conversation.contact))
+        .filter(Conversation.id == conversation_id)
         .first()
     )
 
     if not conversation:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
-        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not can_access_conversation(
-        current_user,
-        conversation,
-    ):
+    if not can_access_conversation(current_user, conversation):
         raise HTTPException(
             status_code=403,
             detail="You cannot send messages in this conversation",
         )
 
-    if conversation.status in [
-        "closed",
-        "no_contact",
-    ]:
+    if conversation.status in ["closed", "no_contact"]:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Cannot send message to a closed "
-                "or no_contact conversation"
-            ),
+            detail="Cannot send message to a closed or no_contact conversation",
         )
 
     message_text = data.message.strip()
 
     if not message_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Message cannot be empty",
-        )
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
         result = send_text_message(
@@ -299,9 +241,7 @@ def send_conversation_message(
         wa_message_id = None
 
         if result.get("messages"):
-            wa_message_id = (
-                result["messages"][0].get("id")
-            )
+            wa_message_id = result["messages"][0].get("id")
 
         saved_message = save_outbound_message(
             db=db,
@@ -312,14 +252,9 @@ def send_conversation_message(
             sent_by_advisor_id=current_user.id,
         )
 
-        saved_message.status_updated_at = (
-            datetime.utcnow()
-        )
+        saved_message.status_updated_at = datetime.utcnow()
 
-        if conversation.status in [
-            "new",
-            "assigned",
-        ]:
+        if conversation.status in ["new", "assigned"]:
             conversation.status = "in_progress"
 
         db.commit()
@@ -328,9 +263,7 @@ def send_conversation_message(
         return {
             "status": "ok",
             "whatsapp_response": result,
-            "message": serialize_message(
-                saved_message
-            ),
+            "message": serialize_message(saved_message),
         }
 
     except Exception as error:
@@ -343,20 +276,14 @@ def send_conversation_message(
             sent_by_advisor_id=current_user.id,
         )
 
-        failed_message.status_updated_at = (
-            datetime.utcnow()
-        )
-
+        failed_message.status_updated_at = datetime.utcnow()
         failed_message.failed_reason = str(error)
 
         db.commit()
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Error sending WhatsApp message: "
-                f"{str(error)}"
-            ),
+            detail=f"Error sending WhatsApp message: {str(error)}",
         )
 
 
@@ -379,30 +306,19 @@ def update_conversation_status(
     if data.status not in allowed_statuses:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Invalid status. "
-                f"Allowed: {allowed_statuses}"
-            ),
+            detail=f"Invalid status. Allowed: {allowed_statuses}",
         )
 
     conversation = (
         db.query(Conversation)
-        .filter(
-            Conversation.id == conversation_id
-        )
+        .filter(Conversation.id == conversation_id)
         .first()
     )
 
     if not conversation:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
-        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not can_access_conversation(
-        current_user,
-        conversation,
-    ):
+    if not can_access_conversation(current_user, conversation):
         raise HTTPException(
             status_code=403,
             detail="You cannot update this conversation",
@@ -435,17 +351,12 @@ def assign_conversation(
 
     conversation = (
         db.query(Conversation)
-        .filter(
-            Conversation.id == conversation_id
-        )
+        .filter(Conversation.id == conversation_id)
         .first()
     )
 
     if not conversation:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
-        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     advisor = (
         db.query(Advisor)
@@ -458,10 +369,7 @@ def assign_conversation(
     )
 
     if not advisor:
-        raise HTTPException(
-            status_code=404,
-            detail="Advisor not found or inactive",
-        )
+        raise HTTPException(status_code=404, detail="Advisor not found or inactive")
 
     conversation.assigned_advisor_id = advisor.id
     conversation.status = "assigned"
@@ -485,22 +393,14 @@ def mark_conversation_as_read(
 ):
     conversation = (
         db.query(Conversation)
-        .filter(
-            Conversation.id == conversation_id
-        )
+        .filter(Conversation.id == conversation_id)
         .first()
     )
 
     if not conversation:
-        raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
-        )
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not can_access_conversation(
-        current_user,
-        conversation,
-    ):
+    if not can_access_conversation(current_user, conversation):
         raise HTTPException(
             status_code=403,
             detail="You cannot update this conversation",
@@ -517,8 +417,6 @@ def mark_conversation_as_read(
         "status": "ok",
         "conversation_id": conversation.id,
         "unread_count": conversation.unread_count,
-        "has_new_message": bool(
-            conversation.has_new_message
-        ),
+        "has_new_message": bool(conversation.has_new_message),
         "last_read_at": conversation.last_read_at,
     }

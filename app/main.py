@@ -9,6 +9,7 @@ from app.routes.calls import router as calls_router
 from app.routes.conversations import router as conversations_router
 from app.routes.users import router as users_router
 from app.routes.whatsapp import router as whatsapp_router
+from app.routes.media import router as media_router
 
 app = FastAPI(title="WhatsApp CRM API")
 
@@ -26,6 +27,7 @@ app.include_router(conversations_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(calls_router)
+app.include_router(media_router)
 
 
 @app.get("/health")
