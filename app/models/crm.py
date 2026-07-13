@@ -47,7 +47,10 @@ class Contact(Base):
     name = Column(String(150), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    conversations = relationship("Conversation", back_populates="contact")
+    conversations = relationship(
+        "Conversation",
+        back_populates="contact",
+    )
 
 
 class Conversation(Base):
@@ -55,8 +58,17 @@ class Conversation(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=False)
-    assigned_advisor_id = Column(Integer, ForeignKey("advisors.id"), nullable=True)
+    contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=False,
+    )
+
+    assigned_advisor_id = Column(
+        Integer,
+        ForeignKey("advisors.id"),
+        nullable=True,
+    )
 
     status = Column(String(50), nullable=False, default="new")
     source_campaign = Column(String(250), nullable=True)
@@ -69,7 +81,10 @@ class Conversation(Base):
     last_inbound_message_at = Column(DateTime, nullable=True)
     last_read_at = Column(DateTime, nullable=True)
 
-    contact = relationship("Contact", back_populates="conversations")
+    contact = relationship(
+        "Contact",
+        back_populates="conversations",
+    )
 
     advisor = relationship(
         "Advisor",
@@ -89,12 +104,30 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
 
-    wa_message_id = Column(String(250), nullable=True, unique=True, index=True)
+    wa_message_id = Column(
+        String(250),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
     direction = Column(String(50), nullable=False)
     message_type = Column(String(50), nullable=False, default="text")
     body = Column(Text, nullable=True)
+
+    # Metadatos multimedia.
+    # No se guardan archivos ni Base64 dentro de Azure SQL.
+    media_id = Column(String(500), nullable=True)
+    media_mime_type = Column(String(200), nullable=True)
+    media_filename = Column(String(500), nullable=True)
+    media_caption = Column(Text, nullable=True)
+    media_sha256 = Column(String(500), nullable=True)
 
     status = Column(String(50), nullable=True, default="received")
     status_updated_at = Column(DateTime, nullable=True)
@@ -102,11 +135,22 @@ class Message(Base):
     read_at = Column(DateTime, nullable=True)
     failed_reason = Column(Text, nullable=True)
 
-    sent_by_advisor_id = Column(Integer, ForeignKey("advisors.id"), nullable=True)
+    sent_by_advisor_id = Column(
+        Integer,
+        ForeignKey("advisors.id"),
+        nullable=True,
+    )
 
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
 
-    conversation = relationship("Conversation", back_populates="messages")
+    conversation = relationship(
+        "Conversation",
+        back_populates="messages",
+    )
 
     sent_by_advisor = relationship(
         "Advisor",
@@ -120,13 +164,26 @@ class ConversationEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
-    advisor_id = Column(Integer, ForeignKey("advisors.id"), nullable=True)
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
+
+    advisor_id = Column(
+        Integer,
+        ForeignKey("advisors.id"),
+        nullable=True,
+    )
 
     event_type = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class CallPermission(Base):
@@ -134,10 +191,24 @@ class CallPermission(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=False)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True)
+    contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=False,
+    )
 
-    permission_status = Column(String(50), nullable=False, default="unknown")
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id"),
+        nullable=True,
+    )
+
+    permission_status = Column(
+        String(50),
+        nullable=False,
+        default="unknown",
+    )
+
     permission_source = Column(String(100), nullable=True)
 
     request_message_id = Column(String(250), nullable=True)
@@ -145,7 +216,11 @@ class CallPermission(Base):
     expires_at = Column(DateTime, nullable=True)
 
     granted_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
 
     meta_response = Column(Text, nullable=True)
     last_error = Column(Text, nullable=True)
@@ -156,9 +231,23 @@ class CallLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
-    contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
-    advisor_id = Column(Integer, ForeignKey("advisors.id"), nullable=True)
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
+
+    contact_id = Column(
+        Integer,
+        ForeignKey("contacts.id"),
+        nullable=True,
+    )
+
+    advisor_id = Column(
+        Integer,
+        ForeignKey("advisors.id"),
+        nullable=True,
+    )
 
     call_type = Column(String(50), nullable=False)
     direction = Column(String(50), nullable=False, default="outbound")
@@ -177,4 +266,9 @@ class CallLog(Base):
 
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
